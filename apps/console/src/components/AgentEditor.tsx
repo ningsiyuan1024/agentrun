@@ -21,7 +21,7 @@ import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, isStarter, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, notOn, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, reachesWeb, same, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
@@ -133,7 +133,7 @@ const STEPS: { id: Step; label: string; note: string; Icon: typeof FileText }[] 
   { id: "history", label: "History", note: "Revisions and the current one", Icon: History },
 ];
 
-/** Create an agent through its steps, or configure an existing agent through its settings sections. A save makes a
+/** Create and configure agents with one settings editor and one set of configuration controls. A save makes a
  *  new revision. A save made on a revision that is no longer current is refused (If-Match), and the editor says so
  *  instead of overwriting the other save. */
 export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError, onRetrySkills, caps, onSave, onMakeCurrent, onArchive, onReload, onBack, backLabel = "Back to agents", embedded = false, onEditPromptChange, initialInstructions, step: initialStep, problem: initialProblem = null, notice, draft, validate, providerChoices = [], permissionGates = [], focusTool, mcpServers = null, serverToolSettings, onRetryMcp }: EditorProps) {
@@ -226,8 +226,6 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const saveButton = useRef<HTMLButtonElement>(null);
   useEffect(() => { if (problem?.kind === "invalid" || problem?.kind === "other") saveButton.current?.focus(); }, [problem]);
   const workflow = agent?.kind === "workflow";
-  // A new agent made from a starter (Decision, Workflow): a workflow revision, so no instructions, tools, thinking or model.
-  const starting = creating && isStarter(f.harness);
   // The built-in tools offered: a call-only one to a workflow, or to an agent that names it.
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
   // The built-in tools a filter keeps: what the Tools step draws and counts, one rule for both.
@@ -238,10 +236,10 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
     + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0)
     + (!workflow ? monidCards(f.tools ?? [], monidSeen, query).length : 0);
   // What a new agent still needs before Create is on.
-  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
+  const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).
   const approvals: Approvals = f.approvals ?? d?.approvals ?? "ask";
-  const choices = harnessOptions(caps.harnesses, creating ? { available: !!caps.decisionProvider } : undefined);
+  const choices = harnessOptions(caps.harnesses);
   // Keep a saved runtime visible even when this server no longer advertises it. Opening Settings never changes it.
   if (f.harness && !choices.some((h) => h.id === f.harness)) choices.push({ id: f.harness, label: f.harness, available: false, reason: "This server does not report this runtime. Your saved choice is kept until you choose another." });
   const unavailable = choices.filter((h) => !h.available);
@@ -271,7 +269,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // `revisions` counts them; the current one is the agent's `revision`, which can be an earlier one after "Make current".
   const current = revisions.find((r) => r.revision === agent?.revision) ?? revisions.find((r) => r.current);
   // The Computer step is an agentic agent's (a workflow runs on the runner), on a server that lists where runs can go.
-  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && !(starting && (s.id === "tools" || s.id === "skills")) && (s.id !== "computer" || (!workflow && !starting && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !starting && !!caps.learning)));
+  const steps = STEPS.filter((s) => !(creating && s.id === "history") && (s.id !== "workflow" || workflow) && (s.id !== "computer" || (!workflow && !!(caps.computers || caps.places))) && (s.id !== "learning" || (!workflow && !!caps.learning)));
   // A step this agent or server has none of (the Computer step on a server that lists no places) opens the first one.
   const step: Step = steps.some((s) => s.id === chosen) ? chosen : steps[0]!.id;
   // Counted only while the Tools step shows: it scans every MCP tool, and the other steps re-render on each keystroke.
@@ -287,15 +285,13 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
     let fields: AgentFields = { ...f, workflowText: undefined, maxCostText: undefined };
     // The default cap, an agentic revision's or a workflow's: the field's number. Emptied, an edit clears a saved cap with an
     // explicit 0 (the server's "no default"; a field left out keeps the cap), and sends none when there is no cap to clear.
-    if (!starting) {
-      const cap = capOf(f.maxCostText);
-      if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
-      // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
-      // anyway would count as a change and make a revision the server refuses as unchanged.
-      const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
-      const value = cap.value ?? 0;
-      if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
-    }
+    const cap = capOf(f.maxCostText);
+    if (!cap.ok) { setSaving(false); setProblem({ kind: "invalid", message: cap.message, fields: { "definition.max_cost_usd": cap.message } }); return; }
+    // 0 (typed, or an emptied field) clears a saved cap; with no cap saved there is nothing to clear, and a 0 sent
+    // anyway would count as a change and make a revision the server refuses as unchanged.
+    const saved = typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0;
+    const value = cap.value ?? 0;
+    if (value !== 0 || saved) fields = { ...fields, max_cost_usd: value };
     if (workflow) {
       try { fields = { ...fields, workflow: JSON.parse(f.workflowText ?? "") }; }
       catch (e) { setSaving(false); setProblem({ kind: "invalid", message: `The workflow is not JSON: ${(e as Error).message}`, fields: { "definition.workflow": `The workflow is not JSON: ${(e as Error).message}` } }); return; }
@@ -334,7 +330,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const skillsField = <Field group label="Skills" note={sourceOwned ? "Edit these skills in the agent’s original source." : "Create skills and edit their instructions or supporting files. Changes are saved with the agent’s next revision."} error={fieldError("skills") || skillsError} warning={fieldWarning("skills")}>
     <AgentSkillsEditor savedNames={d?.skills ?? []} files={f.skillFiles ?? skillFiles ?? (creating ? {} : undefined)} error={skillFilesError} onRetry={onRetrySkills} onChange={skillFiles => set({ skillFiles })} readOnly={sourceOwned} />
   </Field>;
-  const learningSettings = !workflow && !starting && caps.learning ? (
+  const learningSettings = !workflow && caps.learning ? (
     <SettingsSection title="Learning from runs" note="Use corrections and repeated work in later runs.">
       <LearningField fields={f} onFields={set} saved={d?.learning} server={caps.learning} error={fieldError("learning")} warning={fieldWarning("learning")} />
       <div className="max-w-prose space-y-3 text-body text-muted-foreground">
@@ -419,13 +415,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 <Input id="agent-description" value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Short summary for the agent list" />
               </Field>
               </div>
-              {starting ? (
-                <Field group label="Workflow">
-                  <p className="border px-3 py-4 font-mono text-body text-muted-foreground">{f.harness === DECISION
-                    ? "A decision agent is a workflow. It starts from a starter decision workflow: one typed question, and a person when the answer is unclear or not confident enough. Create it, then edit its nodes in the Workflow step."
-                    : "A workflow agent starts from a one-step workflow: an agent node that does what its input's task asks. Create it, then edit its nodes, or paste a workflow's JSON over it, in the Workflow step."}</p>
-                </Field>
-              ) : workflow ? (
+              {workflow ? (
                 <Field group label="Workflow" note="This agent is a workflow. Edit its nodes in the Workflow section: the graph redraws as you type and the server checks it." warning={fieldWarning("workflow")}>
                   <Button size="sm" onClick={() => setStep("workflow")}><Workflow aria-hidden /> Open the workflow</Button>
                 </Field>
@@ -445,7 +435,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               baseLabel={current ? `rev ${current.version}` : undefined} validate={validate} tools={f.tools} serverIssues={workflowIssues(problem, workflow)} />
           )}
 
-          {step === "computer" && !workflow && !starting && caps.computers && (
+          {step === "computer" && !workflow && caps.computers && (
             <div className="space-y-8">
               {/* The computer picked, else the one saved, else the place the form starts on as a computer (the server's
                   default for a new agent). A pick sets the place it is too, so a tool a box opens (bash) follows it. */}
@@ -458,7 +448,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
-          {step === "computer" && !workflow && !starting && !caps.computers && caps.places && (
+          {step === "computer" && !workflow && !caps.computers && caps.places && (
             <div className="space-y-8">
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
@@ -500,7 +490,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               )}
               {/* The agent's tool approvals (definition.approvals): whether a tool set to ask waits for your OK. Questions are not
                   this: the agent asks you one only through ask_person, a tool of its own (first in Tools). */}
-              {!workflow && !starting && (
+              {!workflow && (
                 <fieldset aria-label="Tool approvals" className="space-y-2">
                   <legend className="caps text-small font-semibold">Tool approvals</legend>
                   {([["ask", "Ask me", "A tool set to ask waits for your OK before it runs."], ["never", "Never ask (run unattended)", "For an agent that runs on a trigger, with no one there to answer."]] as const).map(([value, label, note]) => (
@@ -549,30 +539,26 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                         )}
                       </Field>
                     )}
-                    {!starting && (
-                      <div className="min-w-0 space-y-6">
-                        <ModelField id="agent-model" harness={f.harness ?? "pi"} model={f.model} onModel={(model) => set({ model })} harnesses={caps.harnesses} routePrefix={caps.routePrefix} state={modelField}
-                          error={{ ...problemOf, text: fieldError("model") }} warning={{ harness: d?.harness ?? "pi", model: d?.model, text: fieldWarning("model") }} />
-                        {!workflow && (
-                          <Field label="Thinking" id="agent-thinking" note="How much reasoning the model uses before answering." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
-                            <Picker id="agent-thinking" name="thinking" label="Thinking" className="w-full" value={f.thinking ?? ""} onChange={(thinking) => set({ thinking: thinking || undefined })}
-                              options={[{ value: "", label: "Model default" }, ...thinkingChoices.map((t) => ({ value: t, label: t === "xhigh" ? "Extra high" : t.charAt(0).toUpperCase() + t.slice(1) }))]} />
-                          </Field>
-                        )}
-                      </div>
-                    )}
+                    <div className="min-w-0 space-y-6">
+                      <ModelField id="agent-model" harness={f.harness ?? "pi"} model={f.model} onModel={(model) => set({ model })} harnesses={caps.harnesses} routePrefix={caps.routePrefix} state={modelField}
+                        error={{ ...problemOf, text: fieldError("model") }} warning={{ harness: d?.harness ?? "pi", model: d?.model, text: fieldWarning("model") }} />
+                      {!workflow && (
+                        <Field label="Thinking" id="agent-thinking" note="How much reasoning the model uses before answering." error={fieldError("thinking")} warning={fieldWarning("thinking")}>
+                          <Picker id="agent-thinking" name="thinking" label="Thinking" className="w-full" value={f.thinking ?? ""} onChange={(thinking) => set({ thinking: thinking || undefined })}
+                            options={[{ value: "", label: "Model default" }, ...thinkingChoices.map((t) => ({ value: t, label: t === "xhigh" ? "Extra high" : t.charAt(0).toUpperCase() + t.slice(1) }))]} />
+                        </Field>
+                      )}
+                    </div>
                   </div>
                 </div>
               </SettingsSection>
-              {!starting && (
-                <SettingsSection title="Spending" note="Set the default spending limit for each run.">
-                  <div className="space-y-6">
-                    <Field label="Spend limit per run (USD)" id="agent-max-cost" optional note={<>Stops a run at this amount unless the run or trigger sets its own limit. Leave empty for no limit.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}{freeNote && <span className="mt-1 block" data-note="free-requests">{freeNote}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
-                      <Input id="agent-max-cost" inputMode="decimal" className="sm:max-w-xs" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
-                    </Field>
-                  </div>
-                </SettingsSection>
-              )}
+              <SettingsSection title="Spending" note="Set the default spending limit for each run.">
+                <div className="space-y-6">
+                  <Field label="Spend limit per run (USD)" id="agent-max-cost" optional note={<>Stops a run at this amount unless the run or trigger sets its own limit. Leave empty for no limit.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}{freeNote && <span className="mt-1 block" data-note="free-requests">{freeNote}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
+                    <Input id="agent-max-cost" inputMode="decimal" className="sm:max-w-xs" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
+                  </Field>
+                </div>
+              </SettingsSection>
             </div>
           )}
 
@@ -611,7 +597,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
         {!creating && step !== "history" && <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="What changed (a note on this revision)" aria-label="Revision note" className="h-9 min-w-0 flex-1" />}
         {step === "history" && <span className="flex-1" />}
         {/* Off with nothing to save, saying which revision is saved (the served current one); on with an edit. */}
-        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !starting && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
+        {!viewing && <Button ref={saveButton} size="sm" variant="solid" onClick={save} disabled={!onSave || saving || (!creating && !dirty) || !f.name?.trim() || (!workflow && !f.instructions?.trim())}>{creating ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : dirty ? "Save revision" : current ? `Saved · rev ${current.version}` : "Saved"}</Button>}
         {/* Why Create is off, under it: what the form still needs. A name is the person's own (it is fixed at creation), so
             none is made up for them. */}
         {creating && !saving && !viewing && createNeeds.map((why) => <p key={why} className="w-full text-right font-mono text-small text-muted-foreground">{why}</p>)}
