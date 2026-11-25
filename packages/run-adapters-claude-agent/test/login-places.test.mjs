@@ -24,13 +24,14 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const FOLDER_VARS = ['CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR', 'ANTHROPIC_CONFIG_DIR'];
 
 /** A stand-in CLI that writes its arguments and environment to seen.json beside itself and answers a signed-out status.
+ *  seen.json is written whole (a temp file renamed onto it), so a poll never reads it half written.
  *  `sub`: a folder of that name it is kept in. */
 function fakeCli(sub) {
   const dir = sub ? join(scratch(), sub) : scratch();
   mkdirSync(dir, { recursive: true });
   const cli = join(dir, 'claude');
   const seen = join(dir, 'seen.json');
-  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
+  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(`${seen}.tmp`)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nrequire('node:fs').renameSync(${JSON.stringify(`${seen}.tmp`)}, ${JSON.stringify(seen)});\nprocess.stdout.write(${JSON.stringify(JSON.stringify({ loggedIn: false, authMethod: 'none' }))});\nprocess.exit(1);\n`, { mode: 0o755 });
   return { cli, seen: () => (existsSync(seen) ? JSON.parse(readFileSync(seen, 'utf8')) : undefined) };
 }
 

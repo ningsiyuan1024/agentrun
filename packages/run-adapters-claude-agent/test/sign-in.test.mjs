@@ -21,12 +21,13 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 const TOKENS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 /** A stand-in CLI that writes its arguments and environment to seen.json beside itself, then exits `code`, or, with
- *  `waits`, stays until it is ended (20 s at most). */
+ *  `waits`, stays until it is ended (20 s at most). seen.json is written whole (a temp file renamed onto it), so a poll
+ *  never reads it half written. */
 function fakeCli({ code = 0, waits = false } = {}) {
   const dir = scratch();
   const cli = join(dir, 'claude');
   const seen = join(dir, 'seen.json');
-  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\n${waits ? 'setTimeout(() => process.exit(0), 20000);' : `process.exit(${code});`}\n`, { mode: 0o755 });
+  writeFileSync(cli, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(`${seen}.tmp`)}, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\nrequire('node:fs').renameSync(${JSON.stringify(`${seen}.tmp`)}, ${JSON.stringify(seen)});\n${waits ? 'setTimeout(() => process.exit(0), 20000);' : `process.exit(${code});`}\n`, { mode: 0o755 });
   return { cli, seen: () => (existsSync(seen) ? JSON.parse(readFileSync(seen, 'utf8')) : undefined) };
 }
 
